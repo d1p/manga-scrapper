@@ -293,6 +293,7 @@ def build_cbz_volumes(series_name: str, opt_dir: Path, out_dir: Path, max_size_m
         logger.info(f"  Creating {vol_name}...")
         with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_DEFLATED) as cbz:
             for c_dir, imgs in ch_data:
-                folder_name = f"Chapter {extract_ch_str(c_dir.name)}"
+                label = c_dir.name.replace("chapter-", "", 1)
+                folder_name = f"Chapter {label}"
                 for img in imgs:
                     cbz.write(img, f"{folder_name}/{img.name}")
