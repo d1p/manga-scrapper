@@ -240,36 +240,71 @@ def group_and_stitch(image_paths: list[Path], page_urls: list[dict], chapter_dir
             tiles[0].rename(dest)
             result.append(dest)
         else:
-            images = []
-            total_h = 0
-            max_w = 0
+            # Determine layout: if all tiles have the same width, stack vertically.
+            # If widths vary, arrange in a grid inferred from tile dimensions.
+            widths = set()
+            heights = set()
+            tile_info = []
             for t in tiles:
                 try:
                     img = Image.open(t)
-                    images.append(img)
-                    total_h += img.height
-                    max_w = max(max_w, img.width)
+                    w, h = img.size
+                    widths.add(w)
+                    heights.add(h)
+                    tile_info.append((t, img, w, h))
                 except Exception:
                     continue
 
-            if images:
+            if not tile_info:
+                continue
+
+            if len(widths) == 1:
+                max_w = max(widths)
+                total_h = sum(h for _, _, _, h in tile_info)
                 canvas = Image.new("RGB", (max_w, total_h))
                 y = 0
-                for img in images:
+                for _, img, _, _ in tile_info:
                     canvas.paste(img, (0, y))
                     img.close()
                     y += img.height
+            else:
+                rows: dict[int, list] = {}
+                for t, img, w, h in tile_info:
+                    rows.setdefault(h, []).append((t, img, w))
+                sorted_heights = sorted(rows.keys(), reverse=True)
+                col_widths = sorted(set(widths))
+                col_x = {}
+                cx = 0
+                for cw in col_widths:
+                    col_x[cw] = cx
+                    cx += cw
 
-                dest = stitched_dir / f"{page_num:03d}.jpg"
-                canvas.save(dest, "JPEG", quality=95, optimize=True)
-                canvas.close()
-                result.append(dest)
+                max_w = cx
+                total_h = sum(sorted_heights)
+                canvas = Image.new("RGB", (max_w, total_h))
+                y = 0
+                for row_h in sorted_heights:
+                    row_tiles = sorted(rows[row_h], key=lambda x: x[2])
+                    for t, img, w in row_tiles:
+                        canvas.paste(img, (col_x[w], y))
+                        img.close()
+                    y += row_h
 
-                for t in tiles:
-                    try:
-                        t.unlink()
-                    except Exception:
-                        pass
+            ext = ".png" if max(total_h, max_w) > 30000 else ".jpg"
+            dest = stitched_dir / f"{page_num:03d}{ext}"
+            try:
+                canvas.save(dest, "JPEG" if ext == ".jpg" else "PNG", quality=85)
+            except OSError:
+                dest = stitched_dir / f"{page_num:03d}.png"
+                canvas.save(dest, "PNG", optimize=True)
+            canvas.close()
+            result.append(dest)
+
+            for t, _, _, _ in tile_info:
+                try:
+                    t.unlink()
+                except Exception:
+                    pass
 
         page_num += 1
 
