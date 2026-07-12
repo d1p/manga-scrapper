@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from core import (
     setup_logging, sanitize_name, ProgressTracker,
-    download_images, clean_chapter_images, optimize_image,
+    download_images, group_and_stitch, optimize_image,
     build_cbz_volumes, chapter_sort_label, compute_chapter_padding,
 )
 
@@ -241,12 +241,14 @@ def main():
                     logger.warning(f"  No images downloaded for Ch. {ch_num:g}")
                     continue
 
-                cleaned = saved if args.no_cleanup else clean_chapter_images(c_dir, saved)
-                if cleaned:
+                # Stitch tiles into logical pages
+                saved = group_and_stitch(saved, page_urls, c_dir)
+
+                if saved:
                     opt_c_dir.mkdir(parents=True, exist_ok=True)
-                    for img in cleaned:
+                    for img in saved:
                         optimize_image(img, opt_c_dir)
-                    tracker.mark_chapter_done(c_dir, f"Chapter {ch_num:g}", len(cleaned))
+                    tracker.mark_chapter_done(c_dir, f"Chapter {ch_num:g}", len(saved))
 
             page.close()
         finally:

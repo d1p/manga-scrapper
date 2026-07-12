@@ -163,8 +163,118 @@ def download_images(page_urls: list[dict], chapter_dir: Path, referer: str, conc
 
 
 # --------------------------------------------------------------------------
-# Image cleanup & optimization
+# Tile stitching (for sites that split pages into vertical segments)
 # --------------------------------------------------------------------------
+HASH_RE = re.compile(r"/mf/([0-9a-f]+)/")
+
+
+def _extract_hash(url: str) -> str | None:
+    m = HASH_RE.search(url)
+    return m.group(1) if m else None
+
+
+def _find_tile_boundary(hash_a: str, hash_b: str) -> tuple[int, int]:
+    """Find the varying hex segment between two tile hashes from the same page."""
+    start = 0
+    while start < len(hash_a) and start < len(hash_b) and hash_a[start] == hash_b[start]:
+        start += 1
+    end = start
+    while end < len(hash_a) and end < len(hash_b) and hash_a[end] != hash_b[end]:
+        end += 1
+    return start, end
+
+
+def group_and_stitch(image_paths: list[Path], page_urls: list[dict], chapter_dir: Path) -> list[Path]:
+    """Given downloaded images and their original URLs, group tiles and stitch.
+
+    page_urls must be in the same order as image_paths (from download_images).
+    """
+    if len(image_paths) < 2:
+        return image_paths
+
+    # Pair paths with their URL hashes, using index-based matching
+    path_hash: dict[str, str] = {}  # str(path) -> hash
+    ordered_pairs = []
+    for path, page in zip(image_paths, page_urls):
+        url = page if isinstance(page, str) else page["url"]
+        h = _extract_hash(url)
+        if h and path.exists():
+            path_hash[str(path)] = h
+            ordered_pairs.append((h, path))
+
+    if len(ordered_pairs) < 2:
+        return image_paths
+
+    # Find tile boundary from the first two items
+    tile_start, tile_end = _find_tile_boundary(ordered_pairs[0][0], ordered_pairs[1][0])
+    if tile_start == tile_end or (tile_end - tile_start) > 4:
+        return image_paths
+
+    # Group by the stable parts of the hash (everything except the tile segment)
+    groups: dict[str, list[Path]] = {}
+    group_first_tile: dict[str, str] = {}
+    for h, p in ordered_pairs:
+        key = h[:tile_start] + h[tile_end:]
+        tile_hex = h[tile_start:tile_end]
+        if key not in groups:
+            groups[key] = []
+            group_first_tile[key] = tile_hex
+        groups[key].append(p)
+
+    # Sort tiles within each group by tile hex value
+    for key in groups:
+        groups[key].sort(key=lambda p: path_hash[str(p)][tile_start:tile_end])
+
+    stitched_dir = chapter_dir / "_stitched"
+    stitched_dir.mkdir(exist_ok=True)
+
+    result = []
+    # Sort groups by first tile hex value to maintain page order
+    sorted_groups = sorted(group_first_tile.items(), key=lambda kv: kv[1])
+    page_num = 1
+
+    for key, _ in sorted_groups:
+        tiles = groups[key]
+        if len(tiles) == 1:
+            dest = stitched_dir / f"{page_num:03d}{tiles[0].suffix}"
+            tiles[0].rename(dest)
+            result.append(dest)
+        else:
+            images = []
+            total_h = 0
+            max_w = 0
+            for t in tiles:
+                try:
+                    img = Image.open(t)
+                    images.append(img)
+                    total_h += img.height
+                    max_w = max(max_w, img.width)
+                except Exception:
+                    continue
+
+            if images:
+                canvas = Image.new("RGB", (max_w, total_h))
+                y = 0
+                for img in images:
+                    canvas.paste(img, (0, y))
+                    img.close()
+                    y += img.height
+
+                dest = stitched_dir / f"{page_num:03d}.jpg"
+                canvas.save(dest, "JPEG", quality=95, optimize=True)
+                canvas.close()
+                result.append(dest)
+
+                for t in tiles:
+                    try:
+                        t.unlink()
+                    except Exception:
+                        pass
+
+        page_num += 1
+
+    logger.info(f"  Stitched {len(image_paths)} tiles -> {len(result)} pages")
+    return result
 MIN_DIM = 300
 MIN_SZ_RATIO = 0.15
 MIN_AREA_RATIO = 0.15
