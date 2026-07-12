@@ -152,7 +152,8 @@ def main():
     parser.add_argument("--name", required=True)
     parser.add_argument("--url", required=True, help="Manga listing page URL")
     parser.add_argument("--filter", default=None, help="String to match in chapter links (defaults to --name)")
-    parser.add_argument("--out", default="./manga_output")
+    parser.add_argument("--out", default="./manga_output", help="Output directory for final CBZ files")
+    parser.add_argument("--cache", default=None, help="Working directory for downloaded images and metadata (default: --out/.work)")
     parser.add_argument("--max-chapters", type=int, default=None)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--debug", action="store_true")
@@ -167,7 +168,8 @@ def main():
         logger.error("Name is empty after sanitization")
         sys.exit(1)
 
-    work_dir = Path(args.out) / ".work" / safe_name
+    cache_root = Path(args.cache) if args.cache else (Path(args.out) / ".work")
+    work_dir = cache_root / safe_name
     library_dir = Path(args.out) / safe_name
     raw_dir = work_dir / "raw_images"
     opt_dir = work_dir / "optimized_images"
