@@ -218,37 +218,36 @@ def main():
             pad = compute_chapter_padding(chapters)
             logger.debug(f"  Padding: {pad} digits (max ch: {max(ch['number'] for ch in chapters):g})")
 
-            if display_dashboard(chapters, tracker, raw_dir, pad):
-                browser.close()
-                return
+            all_done = display_dashboard(chapters, tracker, raw_dir, pad)
 
-            logger.info("Starting download...")
-            for ch in tqdm(chapters, desc="Processing"):
-                ch_num = ch["number"]
-                ch_id = ch["id"]
-                label = chapter_sort_label(ch_num, pad)
-                c_dir = raw_dir / f"chapter-{label}"
-                opt_c_dir = opt_dir / f"chapter-{label}"
+            if not all_done:
+                logger.info("Starting download...")
+                for ch in tqdm(chapters, desc="Processing"):
+                    ch_num = ch["number"]
+                    ch_id = ch["id"]
+                    label = chapter_sort_label(ch_num, pad)
+                    c_dir = raw_dir / f"chapter-{label}"
+                    opt_c_dir = opt_dir / f"chapter-{label}"
 
-                if tracker.is_chapter_done(c_dir):
-                    continue
+                    if tracker.is_chapter_done(c_dir):
+                        continue
 
-                page_urls = fetch_chapter_pages(page, ch_id, base_url)
-                if not page_urls:
-                    logger.warning(f"  No pages for Ch. {ch_num:g}")
-                    continue
+                    page_urls = fetch_chapter_pages(page, ch_id, base_url)
+                    if not page_urls:
+                        logger.warning(f"  No pages for Ch. {ch_num:g}")
+                        continue
 
-                saved = download_images(page_urls, c_dir, args.url, args.concurrency)
-                if not saved:
-                    logger.warning(f"  No images downloaded for Ch. {ch_num:g}")
-                    continue
+                    saved = download_images(page_urls, c_dir, args.url, args.concurrency)
+                    if not saved:
+                        logger.warning(f"  No images downloaded for Ch. {ch_num:g}")
+                        continue
 
-                cleaned = saved if args.no_cleanup else clean_chapter_images(c_dir, saved)
-                if cleaned:
-                    opt_c_dir.mkdir(parents=True, exist_ok=True)
-                    for img in cleaned:
-                        optimize_image(img, opt_c_dir)
-                    tracker.mark_chapter_done(c_dir, f"Chapter {ch_num:g}", len(cleaned))
+                    cleaned = saved if args.no_cleanup else clean_chapter_images(c_dir, saved)
+                    if cleaned:
+                        opt_c_dir.mkdir(parents=True, exist_ok=True)
+                        for img in cleaned:
+                            optimize_image(img, opt_c_dir)
+                        tracker.mark_chapter_done(c_dir, f"Chapter {ch_num:g}", len(cleaned))
 
             page.close()
         finally:

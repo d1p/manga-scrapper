@@ -39,14 +39,31 @@ CHAPTER_NUM_PATTERNS = [
 
 
 def extract_chapter_number(url: str, text: str) -> Optional[float]:
+    path = urlparse(url).path.lower()
+
     for pattern in CHAPTER_NUM_PATTERNS:
-        for target in [text.lower(), urlparse(url).path.lower()]:
-            m = re.search(pattern, target)
-            if m:
-                try:
-                    return float(m.group(1))
-                except ValueError:
-                    continue
+        m = re.search(pattern, text.lower())
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                continue
+
+    for pattern in CHAPTER_NUM_PATTERNS[:2]:
+        m = re.search(pattern, path)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                continue
+
+    m = re.search(CHAPTER_NUM_PATTERNS[2], path)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+
     return None
 
 
@@ -188,31 +205,30 @@ def main():
             if args.max_chapters:
                 links = links[:args.max_chapters]
 
-            if display_dashboard(args.name, links, tracker, raw_dir):
-                browser.close()
-                return
+            all_done = display_dashboard(args.name, links, tracker, raw_dir)
 
-            logger.info("Starting download for queued chapters...")
-            for idx, link in enumerate(tqdm(links, desc="Processing"), start=1):
-                num = extract_chapter_number(link["url"], link["text"])
-                label = chapter_sort_label(num)
-                title = chapter_display_title(num, link["text"], idx)
-                c_dir = raw_dir / f"chapter-{label}"
-                opt_c_dir = opt_dir / f"chapter-{label}"
+            if not all_done:
+                logger.info("Starting download for queued chapters...")
+                for idx, link in enumerate(tqdm(links, desc="Processing"), start=1):
+                    num = extract_chapter_number(link["url"], link["text"])
+                    label = chapter_sort_label(num)
+                    title = chapter_display_title(num, link["text"], idx)
+                    c_dir = raw_dir / f"chapter-{label}"
+                    opt_c_dir = opt_dir / f"chapter-{label}"
 
-                if tracker.is_chapter_done(c_dir):
-                    continue
+                    if tracker.is_chapter_done(c_dir):
+                        continue
 
-                saved = scrape_chapter(page, link["url"], c_dir, args.concurrency)
-                if not saved:
-                    continue
+                    saved = scrape_chapter(page, link["url"], c_dir, args.concurrency)
+                    if not saved:
+                        continue
 
-                cleaned = saved if args.no_cleanup else clean_chapter_images(c_dir, saved)
-                if cleaned:
-                    opt_c_dir.mkdir(parents=True, exist_ok=True)
-                    for img in cleaned:
-                        optimize_image(img, opt_c_dir)
-                    tracker.mark_chapter_done(c_dir, title, len(cleaned))
+                    cleaned = saved if args.no_cleanup else clean_chapter_images(c_dir, saved)
+                    if cleaned:
+                        opt_c_dir.mkdir(parents=True, exist_ok=True)
+                        for img in cleaned:
+                            optimize_image(img, opt_c_dir)
+                        tracker.mark_chapter_done(c_dir, title, len(cleaned))
         finally:
             browser.close()
 

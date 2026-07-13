@@ -249,12 +249,32 @@ def extract_ch_str(chapter_name: str) -> str:
         return raw
 
 
+def _cbz_has_padded_chapters(cbz_path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(cbz_path, "r") as cbz:
+            for name in cbz.namelist():
+                m = re.search(r"^Chapter\s+(\d+)", name)
+                if m:
+                    return len(m.group(1)) >= 3
+        return True
+    except Exception:
+        return False
+
+
+def _chapter_dir_sort_key(p: Path):
+    raw = p.name.replace("chapter-", "")
+    try:
+        return (0, float(raw))
+    except ValueError:
+        return (1, raw)
+
+
 def build_cbz_volumes(series_name: str, opt_dir: Path, out_dir: Path, max_size_mb: int):
     logger.info(f"\nPackaging CBZ volumes (max {max_size_mb} MB/vol)...")
     out_dir.mkdir(parents=True, exist_ok=True)
     max_bytes = max_size_mb * 1024 * 1024
 
-    ordered = sorted([d for d in opt_dir.iterdir() if d.is_dir()], key=lambda p: p.name)
+    ordered = sorted([d for d in opt_dir.iterdir() if d.is_dir()], key=_chapter_dir_sort_key)
     volumes, cur_vol, cur_sz, cur_chs = [], 1, 0, []
 
     for ch_dir in ordered:
@@ -282,7 +302,7 @@ def build_cbz_volumes(series_name: str, opt_dir: Path, out_dir: Path, max_size_m
             vol_name = f"{series_name} - Vol {vol_num:02d} (Ch {start_str}-{end_str}).cbz"
         cbz_path = out_dir / vol_name
 
-        if cbz_path.exists():
+        if cbz_path.exists() and _cbz_has_padded_chapters(cbz_path):
             logger.debug(f"  Skipping existing: {vol_name}")
             continue
 
