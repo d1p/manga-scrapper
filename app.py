@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
+import platformdirs
+
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
@@ -167,7 +169,7 @@ def main():
     parser.add_argument("--url", required=True, help="Manga listing page URL")
     parser.add_argument("--filter", default=None, help="String to match in chapter links (defaults to --name)")
     parser.add_argument("--out", default="./manga_output", help="Output directory for final CBZ files")
-    parser.add_argument("--cache", default=None, help="Working directory for downloaded images and metadata (default: --out/.work)")
+    parser.add_argument("--cache", default=platformdirs.user_cache_dir("manga-scrapper"), help="Working directory for downloaded images and metadata")
     parser.add_argument("--max-chapters", type=int, default=None)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--debug", action="store_true")

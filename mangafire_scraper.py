@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+import platformdirs
+
 from tqdm import tqdm
 
 from core import (
@@ -135,7 +137,7 @@ def main():
     parser.add_argument("--url", required=True, help="Title page URL")
     parser.add_argument("--name", required=True, help="Series name for output")
     parser.add_argument("--out", default="./manga_output", help="Output directory for final CBZ files")
-    parser.add_argument("--cache", default=None, help="Working directory for downloaded images and metadata (default: --out/.work)")
+    parser.add_argument("--cache", default=platformdirs.user_cache_dir("manga-scrapper"), help="Working directory for downloaded images and metadata")
     parser.add_argument("--max-chapters", type=int, default=None)
     parser.add_argument("--max-vol-mb", type=int, default=300)
     parser.add_argument("--concurrency", type=int, default=8)
