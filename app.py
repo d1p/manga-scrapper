@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
-import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
@@ -38,33 +37,31 @@ CHAPTER_NUM_PATTERNS = [
 ]
 
 
-def extract_chapter_number(url: str, text: str) -> Optional[float]:
-    path = urlparse(url).path.lower()
-
-    for pattern in CHAPTER_NUM_PATTERNS:
-        m = re.search(pattern, text.lower())
-        if m:
-            try:
-                return float(m.group(1))
-            except ValueError:
-                continue
-
-    for pattern in CHAPTER_NUM_PATTERNS[:2]:
-        m = re.search(pattern, path)
-        if m:
-            try:
-                return float(m.group(1))
-            except ValueError:
-                continue
-
-    m = re.search(CHAPTER_NUM_PATTERNS[2], path)
+def _try_extract_num(pattern: str, source: str) -> Optional[float]:
+    m = re.search(pattern, source)
     if m:
         try:
             return float(m.group(1))
         except ValueError:
             pass
-
     return None
+
+
+def extract_chapter_number(url: str, text: str) -> Optional[float]:
+    path = urlparse(url).path.lower()
+    text_lower = text.lower()
+
+    for pattern in CHAPTER_NUM_PATTERNS:
+        num = _try_extract_num(pattern, text_lower)
+        if num is not None:
+            return num
+
+    for pattern in CHAPTER_NUM_PATTERNS[:2]:
+        num = _try_extract_num(pattern, path)
+        if num is not None:
+            return num
+
+    return _try_extract_num(CHAPTER_NUM_PATTERNS[2], path)
 
 
 def chapter_display_title(num: Optional[float], text: str, idx: int) -> str:

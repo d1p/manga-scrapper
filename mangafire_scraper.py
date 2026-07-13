@@ -201,12 +201,12 @@ def main():
             chapters = fetch_chapters(page, title_id, base_url, args.language)
 
             if args.prefer != "all":
-                seen = {}
+                by_number = {}
                 for ch in chapters:
                     n = ch["number"]
-                    if n not in seen or ch.get("type") == args.prefer:
-                        seen[n] = ch
-                chapters = sorted(seen.values(), key=lambda c: c["number"], reverse=True)
+                    if n not in by_number or ch.get("type") == args.prefer:
+                        by_number[n] = ch
+                chapters = sorted(by_number.values(), key=lambda c: c["number"], reverse=True)
 
             if not chapters:
                 logger.error("No chapters found")

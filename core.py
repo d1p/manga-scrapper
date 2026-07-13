@@ -262,11 +262,11 @@ def _cbz_has_padded_chapters(cbz_path: Path) -> bool:
 
 
 def _chapter_dir_sort_key(p: Path):
-    raw = p.name.replace("chapter-", "")
+    ch_str = extract_ch_str(p.name)
     try:
-        return (0, float(raw))
+        return (0, float(ch_str))
     except ValueError:
-        return (1, raw)
+        return (1, ch_str)
 
 
 def build_cbz_volumes(series_name: str, opt_dir: Path, out_dir: Path, max_size_mb: int):

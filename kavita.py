@@ -6,13 +6,9 @@
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
 
 from core import sanitize_name
-
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def organize(input_dir: str | Path, output_dir: str | Path):

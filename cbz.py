@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from core import build_cbz_volumes  # noqa: F401 - used if ever CLI-less
+from core import build_cbz_volumes
 
 SUPPORTED_FORMATS = (".jpg", ".jpeg", ".png", ".webp")
 lock = threading.Lock()
@@ -28,26 +28,24 @@ class AppState:
 STATE = AppState()
 
 
-def find_chapter_dirs(input_dir):
+def find_chapter_dirs(input_dir: Path) -> list[tuple[float, Path]]:
     chapters = []
-    for folder in sorted(os.listdir(input_dir)):
-        path = os.path.join(input_dir, folder)
-        if os.path.isdir(path):
-            m = re.search(r"chapter[\s\-_]*(\d+(?:\.\d+)?)", folder.lower())
+    for path in sorted(input_dir.iterdir()):
+        if path.is_dir():
+            m = re.search(r"chapter[\s\-_]*(\d+(?:\.\d+)?)", path.name.lower())
             if m:
                 chapters.append((float(m.group(1)), path))
     return sorted(chapters, key=lambda x: x[0])
 
 
-def process_image(src, dst):
-    if os.path.exists(dst):
+def process_image(src: Path, dst: Path) -> str:
+    if dst.exists():
         return "cached"
     try:
-        img = Image.open(src)
-        has_alpha = img.mode == "RGBA"
-        if has_alpha:
-            dst = os.path.splitext(dst)[0] + ".png"
-        img.save(dst, "PNG" if has_alpha else "JPEG", quality=90)
+        with Image.open(src) as img:
+            has_alpha = img.mode == "RGBA"
+            out = dst.with_suffix(".png") if has_alpha else dst
+            img.save(out, "PNG" if has_alpha else "JPEG", quality=90)
         return "processed"
     except Exception:
         shutil.copy(src, dst)
@@ -63,12 +61,11 @@ def render_ui():
         print(f"  Ch.{ch['num']:g} [{icon}]")
 
 
-def process_chapter(ch_num, folder, cache_dir):
-    images = sorted(f for f in os.listdir(folder) if f.lower().endswith(SUPPORTED_FORMATS))
+def process_chapter(ch_num: float, folder: Path, cache_dir: Path):
+    images = sorted(p for p in folder.iterdir() if p.suffix.lower() in SUPPORTED_FORMATS)
     all_cached = True
-    for name in images:
-        src = os.path.join(folder, name)
-        dst = os.path.join(cache_dir, f"ch{ch_num}_{name}")
+    for src in images:
+        dst = cache_dir / f"ch{ch_num}_{src.name}"
         result = process_image(src, dst)
         with lock:
             STATE.chapters[ch_num]["done"] += 1
@@ -91,29 +88,30 @@ def main():
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
 
-    os.makedirs(args.output, exist_ok=True)
-    os.makedirs(args.cache, exist_ok=True)
+    input_dir = Path(args.input)
+    output_dir = Path(args.output)
+    cache_dir = Path(args.cache)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    chapters = find_chapter_dirs(args.input)
+    chapters = find_chapter_dirs(input_dir)
     for ch_num, folder in chapters:
-        images = sorted(f for f in os.listdir(folder) if f.lower().endswith(SUPPORTED_FORMATS))
+        images = sorted(p for p in folder.iterdir() if p.suffix.lower() in SUPPORTED_FORMATS)
         STATE.chapters[ch_num] = {"num": ch_num, "total": len(images), "done": 0, "status": "pending"}
         STATE.total_pages += len(images)
 
     render_ui()
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_chapter, n, d, args.cache) for n, d in chapters]
+        futures = [executor.submit(process_chapter, n, d, cache_dir) for n, d in chapters]
         for f in as_completed(futures):
             try:
                 f.result()
             except Exception as e:
                 print(f"Error: {e}")
 
-    # Copy cached images to an opt-style directory for build_cbz_volumes
-    opt_dir = Path(args.cache)
-    series = Path(args.input).name
-    build_cbz_volumes(series, opt_dir, Path(args.output), args.max_vol_mb)
+    series = input_dir.name
+    build_cbz_volumes(series, cache_dir, output_dir, args.max_vol_mb)
 
     print("\nDone.")
 
