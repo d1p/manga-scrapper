@@ -208,7 +208,8 @@ def main():
                     n = ch["number"]
                     if n not in by_number or ch.get("type") == args.prefer:
                         by_number[n] = ch
-                chapters = sorted(by_number.values(), key=lambda c: c["number"], reverse=True)
+
+            chapters = sorted(by_number.values(), key=lambda c: c["number"])
 
             if not chapters:
                 logger.error("No chapters found")
@@ -235,6 +236,7 @@ def main():
                         continue
 
                     page_urls = fetch_chapter_pages(page, ch_id, base_url)
+
                     if not page_urls:
                         logger.warning(f"  No pages for Ch. {ch_num:g}")
                         continue
