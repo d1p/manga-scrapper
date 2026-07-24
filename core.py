@@ -15,7 +15,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 from tqdm import tqdm
 
 # --------------------------------------------------------------------------
@@ -213,7 +213,22 @@ def clean_chapter_images(chapter_dir: Path, image_paths: list[Path]) -> list[Pat
     return kept
 
 
-def optimize_image(raw_path: Path, opt_dir: Path, max_width: int = 1600) -> Path:
+KINDLE_MAX_W = 1072
+KINDLE_MAX_H = 1448
+KINDLE_BORDER_CROP_SENSITIVITY = 0.98
+
+
+def _crop_borders(img: Image.Image) -> Image.Image:
+    gray = img.convert("L")
+    threshold = int(255 * KINDLE_BORDER_CROP_SENSITIVITY)
+    bbox = gray.point(lambda p: 255 if p >= threshold else 0).getbbox()
+    if bbox and bbox != (0, 0, img.width, img.height):
+        return img.crop(bbox)
+    return img
+
+
+def optimize_image(raw_path: Path, opt_dir: Path, max_width: int = 1600,
+                   kindle: bool = False) -> Path:
     opt_jpg = opt_dir / f"{raw_path.stem}.jpg"
     opt_png = opt_dir / f"{raw_path.stem}.png"
     if opt_jpg.exists():
@@ -223,14 +238,30 @@ def optimize_image(raw_path: Path, opt_dir: Path, max_width: int = 1600) -> Path
 
     try:
         with Image.open(raw_path) as img:
-            has_alpha = img.mode == "RGBA"
-            img = img.convert("RGBA") if has_alpha else img.convert("RGB")
-            if img.width > max_width:
-                ratio = max_width / img.width
-                img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
-            out = opt_png if has_alpha else opt_jpg
-            img.save(out, format="PNG" if has_alpha else "JPEG", quality=85, optimize=True)
-            return out
+            if kindle:
+                img = _crop_borders(img)
+                img = img.convert("L")
+                if img.width > KINDLE_MAX_W or img.height > KINDLE_MAX_H:
+                    ratio = min(KINDLE_MAX_W / img.width,
+                                KINDLE_MAX_H / img.height)
+                    img = img.resize(
+                        (int(img.width * ratio), int(img.height * ratio)),
+                        Image.LANCZOS,
+                    )
+                img.save(opt_jpg, format="JPEG", quality=90, optimize=True)
+                return opt_jpg
+            else:
+                has_alpha = img.mode == "RGBA"
+                img = img.convert("RGBA") if has_alpha else img.convert("RGB")
+                if img.width > max_width:
+                    ratio = max_width / img.width
+                    img = img.resize(
+                        (max_width, int(img.height * ratio)), Image.LANCZOS,
+                    )
+                out = opt_png if has_alpha else opt_jpg
+                img.save(out, format="PNG" if has_alpha else "JPEG",
+                         quality=85, optimize=True)
+                return out
     except Exception as e:
         logger.debug(f"  PIL optimization failed for {raw_path.name}: {e}")
         fb = opt_dir / raw_path.name

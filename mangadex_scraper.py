@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scrape manga from SPA sites that expose chapter/image data via a REST API."""
+"""Scrape manga from MangaDex (https://mangadex.org) via its public REST API."""
 
 import argparse
 import logging
@@ -11,7 +11,6 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import platformdirs
-
 from tqdm import tqdm
 
 from core import (
@@ -31,42 +30,43 @@ logger = logging.getLogger("manga_scraper")
 # --------------------------------------------------------------------------
 # URL parsing
 # --------------------------------------------------------------------------
-TITLE_ID_RE = re.compile(r"/title/([a-z0-9]+)(?:-.*)?")
+MANGA_ID_RE = re.compile(r"/title/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})")
+API_BASE = "https://api.mangadex.org"
+MANGADEX_ORIGIN = "https://mangadex.org"
 
 
-def extract_title_id(url: str) -> str:
-    m = TITLE_ID_RE.search(url)
+def extract_manga_id(url: str) -> str:
+    m = MANGA_ID_RE.search(url)
     if not m:
-        logger.error("Could not extract title ID from URL")
+        logger.error("Could not extract MangaDex manga ID from URL")
         sys.exit(1)
     return m.group(1)
 
 
 def _name_from_url(url: str) -> str:
     path = urlparse(url).path.rstrip("/")
-    m = re.search(r"/title/[a-z0-9]+(?:[.-]|/)(.+)$", path)
+    m = re.search(r"/title/[a-f0-9-]+/(.+)$", path)
     if m:
         return m.group(1).replace("-", " ")
     return ""
 
 
 # --------------------------------------------------------------------------
-# API calls (execute in browser to inherit Cloudflare cookies)
+# API calls (execute in browser to inherit proper TLS fingerprint)
 # --------------------------------------------------------------------------
 def _page_fetch(page, url: str, retries: int = 5) -> Optional[dict]:
-    cache_busted = f"{url}{'&' if '?' in url else '?'}_={int(time.time() * 1000)}"
     for attempt in range(retries):
         try:
             result = page.evaluate(
                 "async (url) => {"
-                "  const r = await fetch(url, {credentials: 'include'});"
+                "  const r = await fetch(url);"
                 "  if (!r.ok) return null;"
                 "  return await r.json();"
                 "}",
-                cache_busted,
+                url,
             )
             if result is not None:
-                logger.debug(f"  API: {url[:100]}")
+                logger.debug(f"  API: {url[:120]}")
                 return result
         except Exception:
             if attempt < retries - 1:
@@ -74,50 +74,107 @@ def _page_fetch(page, url: str, retries: int = 5) -> Optional[dict]:
     return None
 
 
-def fetch_chapters(page, title_id: str, base_url: str, language: str = "en") -> list[dict]:
+def fetch_chapters(page, manga_id: str, language: str = "en",
+                   group_filter: str | None = None) -> list[dict]:
     logger.info("Fetching chapter list...")
-    all_chapters = []
-    page_num = 1
+    all_chapters: list[dict] = []
+    offset = 0
+    limit = 500
+
+    rating_params = "&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic"
 
     with tqdm(desc="  Chapters", unit=" pages") as pbar:
         while True:
-            url = f"{base_url}/api/titles/{title_id}/chapters?language={language}&sort=number&order=desc&page={page_num}&limit=100"
+            url = (f"{API_BASE}/manga/{manga_id}/feed"
+                   f"?translatedLanguage[]={language}"
+                   f"&limit={limit}&offset={offset}"
+                   f"&order[chapter]=asc"
+                   f"&includes[]=scanlation_group"
+                   f"{rating_params}")
             resp = _page_fetch(page, url)
             if not resp:
-                logger.warning(f"  Failed to fetch page {page_num}")
                 break
 
-            items = resp.get("items", [])
+            items = resp.get("data", [])
             all_chapters.extend(items)
             pbar.update(1)
 
-            if not resp.get("meta", {}).get("hasNext"):
+            total = resp.get("total", 0)
+            if offset + limit >= total:
                 break
-            page_num += 1
+            offset += limit
+            time.sleep(0.3)
+
+    if group_filter:
+        all_chapters = [ch for ch in all_chapters if _chapter_matches_group(ch, group_filter)]
 
     logger.info(f"  Found {len(all_chapters)} chapters")
     if all_chapters:
         first = all_chapters[0]
-        logger.info(f"  Latest: Ch. {first['number']:g} (id={first['id']}, type={first.get('type', '?')})")
+        logger.info(f"  First: Ch. {_chapter_number(first):g}")
     return all_chapters
 
 
-def fetch_chapter_pages(page, chapter_id: int, base_url: str) -> Optional[list[dict]]:
-    url = f"{base_url}/api/chapters/{chapter_id}"
+def _chapter_number(ch: dict) -> float:
+    raw = ch.get("attributes", {}).get("chapter")
+    if raw is None:
+        return 0.0
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _chapter_group_name(ch: dict) -> str:
+    for rel in ch.get("relationships", []):
+        if rel.get("type") == "scanlation_group":
+            return rel.get("attributes", {}).get("name", "")
+    return ""
+
+
+def _chapter_matches_group(ch: dict, group_filter: str) -> bool:
+    return group_filter.lower() in _chapter_group_name(ch).lower()
+
+
+def deduplicate_chapters(chapters: list[dict]) -> list[dict]:
+    by_number: dict[float, dict] = {}
+    for ch in chapters:
+        n = _chapter_number(ch)
+        if n not in by_number:
+            by_number[n] = ch
+        else:
+            existing_group = _chapter_group_name(by_number[n])
+            new_group = _chapter_group_name(ch)
+            if not existing_group and new_group:
+                by_number[n] = ch
+    return sorted(by_number.values(), key=_chapter_number)
+
+
+def fetch_chapter_pages(page, chapter_id: str) -> list[str] | None:
+    url = f"{API_BASE}/at-home/server/{chapter_id}"
     resp = _page_fetch(page, url)
     if not resp:
-        logger.warning(f"  API call failed for chapter {chapter_id}")
         return None
-    return resp.get("data", {}).get("pages", [])
+
+    base_url = resp.get("baseUrl")
+    chapter_data = resp.get("chapter", {})
+    chapter_hash = chapter_data.get("hash")
+    page_files = chapter_data.get("data", [])
+
+    if not base_url or not chapter_hash or not page_files:
+        return None
+
+    return [f"{base_url}/data/{chapter_hash}/{f}" for f in page_files]
 
 
 # --------------------------------------------------------------------------
 # Dashboard
 # --------------------------------------------------------------------------
-def display_dashboard(chapters: list[dict], tracker: ProgressTracker, raw_dir: Path, pad: int):
+def display_dashboard(chapters: list[dict], tracker: ProgressTracker,
+                      raw_dir: Path, pad: int) -> bool:
     done, queued = [], []
     for ch in chapters:
-        label = chapter_sort_label(ch["number"], pad)
+        label = chapter_sort_label(_chapter_number(ch), pad)
         c_dir = raw_dir / f"chapter-{label}"
         (done if tracker.is_chapter_done(c_dir) else queued).append(ch)
 
@@ -128,7 +185,16 @@ def display_dashboard(chapters: list[dict], tracker: ProgressTracker, raw_dir: P
     print("-" * 60)
     if queued:
         for ch in queued[:5]:
-            print(f"  [WAIT] Ch. {ch['number']:g} ({ch.get('type', '?')})")
+            n = _chapter_number(ch)
+            attrs = ch.get("attributes", {})
+            title = attrs.get("title") or ""
+            group = _chapter_group_name(ch)
+            info = f"Ch. {n:g}"
+            if title:
+                info += f" - {title}"
+            if group:
+                info += f" [{group}]"
+            print(f"  [WAIT] {info}")
         if len(queued) > 5:
             print(f"  ... and {len(queued) - 5} more")
     else:
@@ -141,8 +207,8 @@ def display_dashboard(chapters: list[dict], tracker: ProgressTracker, raw_dir: P
 # Main
 # --------------------------------------------------------------------------
 def add_arguments(parser: argparse.ArgumentParser):
-    parser.add_argument("--language", default="en")
-    parser.add_argument("--prefer", choices=["official", "unofficial", "all"], default="official")
+    parser.add_argument("--language", default="en", help="Translated language code (default: en)")
+    parser.add_argument("--group", default=None, help="Filter chapters by scanlation group (partial match)")
 
 
 def run(args):
@@ -161,9 +227,8 @@ def run(args):
     opt_dir = work_dir / "optimized_images"
     tracker = ProgressTracker(work_dir)
 
-    title_id = extract_title_id(args.url)
-    base_url = f"{urlparse(args.url).scheme}://{urlparse(args.url).netloc}"
-    logger.info(f"Title ID: {title_id}  |  Base: {base_url}")
+    manga_id = extract_manga_id(args.url)
+    logger.info(f"MangaDex ID: {manga_id}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -181,42 +246,23 @@ def run(args):
             try:
                 page.goto(args.url, wait_until="domcontentloaded", timeout=60000)
             except PWTimeout:
-                logger.warning("  Load timeout, waiting for SPA hydration...")
+                logger.warning("  Load timeout, continuing...")
 
-            for _ in range(15):
-                page.wait_for_timeout(1000)
-                title = page.title()
-                if title and title not in ("Just a moment...", "", "Loading...", "MangaFire - Read Manga Online Free"):
-                    break
-
-            current_url = page.url
-            logger.info(f"  Loaded: {page.title()}  ({current_url})")
-
-            # Extra settle time for API readiness
             page.wait_for_timeout(2000)
+            logger.info(f"  Loaded: {page.title()}")
 
-            if title_id not in current_url:
-                logger.error(f"URL mismatch: expected id='{title_id}', got '{current_url}'")
-                logger.error("  Cloudflare challenge may have failed. Try --no-headless to debug.")
-                sys.exit(1)
-
-            chapters = fetch_chapters(page, title_id, base_url, args.language)
-
-            if args.prefer != "all":
-                by_number = {}
-                for ch in chapters:
-                    n = ch["number"]
-                    if n not in by_number or ch.get("type") == args.prefer:
-                        by_number[n] = ch
-
-            chapters = sorted(by_number.values(), key=lambda c: c["number"])
-
+            chapters = fetch_chapters(page, manga_id, args.language, args.group)
             if not chapters:
                 logger.error("No chapters found")
                 sys.exit(1)
 
+            chapters = deduplicate_chapters(chapters)
+
             if args.max_chapters:
                 chapters = chapters[:args.max_chapters]
+
+            for ch in chapters:
+                ch["number"] = _chapter_number(ch)
 
             pad = compute_chapter_padding(chapters)
             logger.debug(f"  Padding: {pad} digits (max ch: {max(ch['number'] for ch in chapters):g})")
@@ -226,7 +272,7 @@ def run(args):
             if not all_done:
                 logger.info("Starting download...")
                 for ch in tqdm(chapters, desc="Processing"):
-                    ch_num = ch["number"]
+                    ch_num = _chapter_number(ch)
                     ch_id = ch["id"]
                     label = chapter_sort_label(ch_num, pad)
                     c_dir = raw_dir / f"chapter-{label}"
@@ -235,13 +281,12 @@ def run(args):
                     if tracker.is_chapter_done(c_dir):
                         continue
 
-                    page_urls = fetch_chapter_pages(page, ch_id, base_url)
-
+                    page_urls = fetch_chapter_pages(page, ch_id)
                     if not page_urls:
                         logger.warning(f"  No pages for Ch. {ch_num:g}")
                         continue
 
-                    saved = download_images(page_urls, c_dir, args.url, args.concurrency)
+                    saved = download_images(page_urls, c_dir, MANGADEX_ORIGIN, args.concurrency)
                     if not saved:
                         logger.warning(f"  No images downloaded for Ch. {ch_num:g}")
                         continue
@@ -251,7 +296,11 @@ def run(args):
                         opt_c_dir.mkdir(parents=True, exist_ok=True)
                         for img in cleaned:
                             optimize_image(img, opt_c_dir, kindle=args.kindle)
-                        tracker.mark_chapter_done(c_dir, f"Chapter {ch_num:g}", len(cleaned))
+                        attrs = ch.get("attributes", {})
+                        title = attrs.get("title") or f"Chapter {ch_num:g}"
+                        tracker.mark_chapter_done(c_dir, title, len(cleaned))
+
+                    time.sleep(0.2)
 
             page.close()
         finally:
@@ -287,7 +336,7 @@ def _delegate_if_mismatch(expected_module: str, domain_hint: str):
 
 
 def _add_common_args(parser: argparse.ArgumentParser):
-    parser.add_argument("--url", required=True, help="Title page URL")
+    parser.add_argument("--url", required=True)
     parser.add_argument("--name", default="", help="Series name for output (auto-detected from URL if omitted)")
     parser.add_argument("--out", default="./manga_output", help="Output directory for final CBZ files")
     parser.add_argument("--cache", default=platformdirs.user_cache_dir("manga-scrapper"), help="Working directory for downloaded images and metadata")
@@ -300,8 +349,8 @@ def _add_common_args(parser: argparse.ArgumentParser):
 
 
 def main():
-    _delegate_if_mismatch("mangafire_scraper", "mangafire.to")
-    parser = argparse.ArgumentParser(description="Scrape manga from SPA sites with a REST API")
+    _delegate_if_mismatch("mangadex_scraper", "mangadex.org")
+    parser = argparse.ArgumentParser(description="Scrape manga from MangaDex")
     _add_common_args(parser)
     add_arguments(parser)
     args = parser.parse_args()

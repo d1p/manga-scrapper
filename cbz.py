@@ -84,8 +84,8 @@ def main():
     parser.add_argument("--input", default="input_manga")
     parser.add_argument("--output", default="output_cbz")
     parser.add_argument("--cache", default="cache_images")
-    parser.add_argument("--max-vol-mb", type=int, default=300)
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--max-vol-mb", type=int, default=150)
+    parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
     input_dir = Path(args.input)
