@@ -51,64 +51,85 @@ def _name_from_url(url: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# API calls (execute in browser to inherit Cloudflare cookies)
+# Chapter list scraping (DOM-based to avoid vrf-protected API)
 # --------------------------------------------------------------------------
-def _page_fetch(page, url: str, retries: int = 5) -> Optional[dict]:
-    cache_busted = f"{url}{'&' if '?' in url else '?'}_={int(time.time() * 1000)}"
-    for attempt in range(retries):
-        try:
-            result = page.evaluate(
-                "async (url) => {"
-                "  const r = await fetch(url, {credentials: 'include'});"
-                "  if (!r.ok) return null;"
-                "  return await r.json();"
-                "}",
-                cache_busted,
-            )
-            if result is not None:
-                logger.debug(f"  API: {url[:100]}")
-                return result
-        except Exception:
-            if attempt < retries - 1:
-                time.sleep(1)
-    return None
+def _scrape_chapters_from_dom(page, language: str = "en") -> list[dict]:
+    """Scrape chapter data from the rendered DOM (avoids vrf-protected API)."""
+    logger.info("Scraping chapter list from DOM...")
+
+    result = page.evaluate(
+        """() => {
+            const chapters = [];
+            const seen = new Set();
+            const links = document.querySelectorAll('a[href*="/chapter/"]');
+            links.forEach(link => {
+                const href = link.getAttribute('href') || '';
+                const m = href.match(/\\/chapter\\/(\\d+)$/);
+                if (!m) return;
+                const id = parseInt(m[1]);
+                if (seen.has(id)) return;
+                seen.add(id);
+
+                const text = (link.textContent || '').trim();
+                const numMatch = text.match(/Ch\\.\\s*([\\d.]+)/i);
+                const number = numMatch ? parseFloat(numMatch[1]) : id;
+
+                let name = '';
+                const subEl = link.querySelector('.title-detail__row-sub');
+                if (subEl) name = (subEl.textContent || '').trim();
+
+                let type = 'unofficial';
+                const row = link.closest('.title-detail__row');
+                if (row) {
+                    const badge = row.querySelector('[title="Official"]');
+                    if (badge) type = 'official';
+                }
+
+                chapters.push({id, number, name, type, url: href});
+            });
+            return chapters;
+        }""",
+    )
+    if not result:
+        return []
+    for ch in result:
+        ch["language"] = language
+    return result
 
 
 def fetch_chapters(page, title_id: str, base_url: str, language: str = "en") -> list[dict]:
-    logger.info("Fetching chapter list...")
-    all_chapters = []
-    page_num = 1
-
-    with tqdm(desc="  Chapters", unit=" pages") as pbar:
-        while True:
-            url = f"{base_url}/api/titles/{title_id}/chapters?language={language}&sort=number&order=desc&page={page_num}&limit=100"
-            resp = _page_fetch(page, url)
-            if not resp:
-                logger.warning(f"  Failed to fetch page {page_num}")
-                break
-
-            items = resp.get("items", [])
-            all_chapters.extend(items)
-            pbar.update(1)
-
-            if not resp.get("meta", {}).get("hasNext"):
-                break
-            page_num += 1
-
-    logger.info(f"  Found {len(all_chapters)} chapters")
-    if all_chapters:
-        first = all_chapters[0]
-        logger.info(f"  Latest: Ch. {first['number']:g} (id={first['id']}, type={first.get('type', '?')})")
-    return all_chapters
+    return _scrape_chapters_from_dom(page, language)
 
 
-def fetch_chapter_pages(page, chapter_id: int, base_url: str) -> Optional[list[dict]]:
-    url = f"{base_url}/api/chapters/{chapter_id}"
-    resp = _page_fetch(page, url)
-    if not resp:
-        logger.warning(f"  API call failed for chapter {chapter_id}")
+def fetch_chapter_pages(page, chapter_url_path: str, base_url: str) -> Optional[list[dict]]:
+    """Navigate to a chapter page and capture the chapter-pages API response."""
+    m = re.search(r"/chapter/(\d+)$", chapter_url_path)
+    if not m:
+        logger.warning(f"  Could not parse chapter ID from {chapter_url_path}")
         return None
-    return resp.get("data", {}).get("pages", [])
+    chapter_id = int(m.group(1))
+    full_url = f"{base_url}{chapter_url_path}"
+
+    captured = []
+
+    def _on_response(response):
+        if f"/api/chapters/{chapter_id}" in response.url and response.status == 200:
+            captured.append(response)
+
+    page.on("response", _on_response)
+    try:
+        page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
+        for _ in range(40):
+            if captured:
+                break
+            page.wait_for_timeout(500)
+
+        if captured:
+            data = captured[0].json()
+            return data.get("data", {}).get("pages", [])
+        return None
+    finally:
+        page.remove_listener("response", _on_response)
 
 
 # --------------------------------------------------------------------------
@@ -227,7 +248,7 @@ def run(args):
                 logger.info("Starting download...")
                 for ch in tqdm(chapters, desc="Processing"):
                     ch_num = ch["number"]
-                    ch_id = ch["id"]
+                    ch_url = ch.get("url", "")
                     label = chapter_sort_label(ch_num, pad)
                     c_dir = raw_dir / f"chapter-{label}"
                     opt_c_dir = opt_dir / f"chapter-{label}"
@@ -235,13 +256,14 @@ def run(args):
                     if tracker.is_chapter_done(c_dir):
                         continue
 
-                    page_urls = fetch_chapter_pages(page, ch_id, base_url)
+                    page_urls = fetch_chapter_pages(page, ch_url, base_url)
 
                     if not page_urls:
                         logger.warning(f"  No pages for Ch. {ch_num:g}")
                         continue
 
-                    saved = download_images(page_urls, c_dir, args.url, args.concurrency)
+                    chapter_ref = f"{base_url}{ch_url}"
+                    saved = download_images(page_urls, c_dir, chapter_ref, args.concurrency)
                     if not saved:
                         logger.warning(f"  No images downloaded for Ch. {ch_num:g}")
                         continue
@@ -296,6 +318,7 @@ def _add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--concurrency", type=int, default=12)
     parser.add_argument("--no-cleanup", action="store_true")
     parser.add_argument("--no-headless", action="store_true")
+    parser.add_argument("--kindle", action="store_true")
     parser.add_argument("--debug", action="store_true")
 
 
